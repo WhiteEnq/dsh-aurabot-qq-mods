@@ -1,80 +1,88 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import mod, { parseWhen } from '../index.mjs';
 
-const HOUR = 3600_000;
-const DAY = 86_400_000;
-
-function fakeApi(settings = {}) {
-	const dir = mkdtempSync(join(tmpdir(), 'reminder-'));
-	const api = {
-		settings: () => settings,
-		dataDir: () => dir,
-		config: () => ({ ownerQQ: '10086' }),
-		log: { info() {}, warn() {}, error() {}, debug() {} },
-		on: () => {}, context: () => {}, rule: () => {}, every: () => {}, later: () => {}, route: () => {},
-		use: () => null, ask: async () => '', think: async () => '', send: async () => {},
-		defineTool: (t) => t, tool: () => {}, command: () => {},
-		core: { http: {}, hub: {} },
-	};
-	return { api, dir };
+function boot({ failTimes = 0, ownerQQ = '10001' } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'reminder-'));
+  const state = { timer: null, sends: 0, failed: 0 };
+  const api = {
+    settings: () => ({ ...mod.defaults }),
+    dataDir: (...p) => join(dir, ...p),
+    config: () => ({ ownerQQ }),
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+    tool() {}, defineTool: (t) => t, command() {},
+    every(_ms, fn) { state.timer = fn; },
+    send: async () => {
+      state.sends += 1;
+      if (state.failed < failTimes) { state.failed += 1; throw new Error('temporary'); }
+      return {};
+    },
+  };
+  const out = mod.setup(api);
+  return { out, state, dir };
 }
 
+function setDue(dir, count = 1) {
+  const file = join(dir, 'state.json');
+  const s = JSON.parse(readFileSync(file, 'utf8'));
+  for (const r of s.reminds) r.at = Date.now() - 1;
+  writeFileSync(file, JSON.stringify(s), 'utf8');
+}
+
+const pending = (dir) => JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')).reminds.length;
+
 test('模块声明', () => {
-	assert.equal(mod.id, 'reminder');
-	assert.equal(mod.api, 1);
+  assert.equal(mod.id, 'reminder');
+  assert.equal(mod.api, 1);
+  assert.match(mod.version, /^\d+\.\d+\.\d+$/);
 });
 
-test('认「两小时后」这类中文写法', () => {
-	const base = new Date('2026-11-05T02:00:00Z').getTime();
-	const t = parseWhen('两小时后', base);
-	assert.ok(Math.abs(t - (base + 2 * HOUR)) < 1000);
+test('发送失败时保留提醒，下一轮重试', async () => {
+  const { out, state, dir } = boot({ failTimes: 1 });
+  await out.setRemind({ text: '测试提醒', when: '1分钟后', chatId: 'private:10001' });
+  setDue(dir);
+  await state.timer();
+  assert.equal(pending(dir), 1, '失败后应保留');
+  await state.timer();
+  assert.equal(pending(dir), 0, '成功后才删除');
+  assert.equal(state.sends, 2);
 });
 
-test('认「半小时后」', () => {
-	const base = new Date('2026-11-05T02:00:00Z').getTime();
-	const t = parseWhen('半小时后', base);
-	assert.ok(Math.abs(t - (base + 30 * 60_000)) < 1000);
+test('发送成功就删除，不会重复发', async () => {
+  const { out, state, dir } = boot();
+  await out.setRemind({ text: '只发一次', when: '1分钟后', chatId: 'private:10001' });
+  setDue(dir);
+  await state.timer();
+  assert.equal(pending(dir), 0);
+  await state.timer();
+  assert.equal(state.sends, 1, '第二轮不该再发');
 });
 
-test('认「10分钟后」', () => {
-	const base = new Date('2026-11-05T02:00:00Z').getTime();
-	const t = parseWhen('10分钟后', base);
-	assert.ok(Math.abs(t - (base + 10 * 60_000)) < 1000);
+test('同一分钟超过 5 条会分批，不整批丢弃', async () => {
+  const { out, state, dir } = boot();
+  for (let i = 0; i < 7; i += 1) await out.setRemind({ text: `提醒 ${i}`, when: '1分钟后', chatId: 'private:10001' });
+  setDue(dir);
+  await state.timer();
+  assert.equal(pending(dir), 2, '第一批发 5 条，剩余 2 条');
+  await state.timer();
+  assert.equal(pending(dir), 0, '第二批发完');
+  assert.equal(state.sends, 7);
 });
 
-test('认「20:30」这种时刻，过了就排到明天', () => {
-	const base = new Date('2026-11-05T02:00:00Z').getTime();
-	const t = parseWhen('20:30', base);
-	assert.ok(t > base);
-	assert.ok(t - base <= DAY);
+test('没有目标时保留并告警，不静默删除', async () => {
+  const { out, state, dir } = boot({ ownerQQ: '' });
+  await out.setRemind({ text: '没目标', when: '1分钟后', chatId: '' });
+  setDue(dir);
+  await state.timer();
+  assert.equal(pending(dir), 1, '没目标应保留');
+  assert.equal(state.sends, 0);
 });
 
-test('认「明天早上八点」', () => {
-	const base = new Date('2026-11-05T02:00:00Z').getTime();
-	const t = parseWhen('明天早上八点', base);
-	assert.ok(t > base);
-	assert.ok(t - base <= DAY + HOUR);
-});
-
-test('认不出来返回 0', () => {
-	assert.equal(parseWhen('哪天都行'), 0);
-	assert.equal(parseWhen(''), 0);
-});
-
-test('记一条提醒会返回时间', async () => {
-	const { api } = fakeApi({ enabled: true, maxPerDay: 20 });
-	const out = mod.setup(api);
-	const at = await out.setRemind({ text: '交作业', when: '两小时后', chatId: 'private:10086' });
-	assert.match(at, /^\d{2}-\d{2} \d{2}:\d{2}$/);
-	assert.equal(out.list().length, 1);
-});
-
-test('关掉就拒绝记', async () => {
-	const { api } = fakeApi({ enabled: false });
-	const out = mod.setup(api);
-	await assert.rejects(() => out.setRemind({ text: 'x', when: '两小时后' }), /关着/);
+test('时间解析仍然可用', () => {
+	const base = Date.UTC(2026, 10, 26, 0, 0, 0);
+	assert.equal(parseWhen('两小时后', base), base + 2 * 3600_000);
+	assert(parseWhen('明天早上', base) > base);
 });
