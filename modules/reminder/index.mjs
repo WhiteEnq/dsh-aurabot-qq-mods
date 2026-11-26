@@ -70,7 +70,7 @@ const CMD_RE = /^(明天[^ ]*|明早[^ ]*|今[晚晚上]*[^ ]*|\d{1,2}:\d{2}|(?:
 export default {
 	id: 'reminder',
 	name: '约定提醒',
-	version: '1.0.0',
+	version: '1.0.1',
 	api: 1,
 	description: '她说「明天提醒你」的时候真的会到点说；主人也能发 /提醒 明天早上八点 交作业。',
 
@@ -88,6 +88,7 @@ export default {
 		const dir = api.dataDir();
 		const file = join(dir, 'state.json');
 		const setting = () => api.settings();
+		let delivering = false;
 
 		function read() {
 			try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return {}; }
@@ -157,21 +158,32 @@ export default {
 			},
 		});
 
-		// 每分钟看一次到点没有
-		api.every(TICK_MS, () => {
+		// 每分钟看一次到点没有。发成功才删除；发失败保留到下一分钟重试，
+		// 同一分钟超过 5 条也分批发，不再整批丢弃。
+		api.every(TICK_MS, async () => {
+			if (delivering) return;
 			const s = read();
 			const list = Array.isArray(s.reminds) ? s.reminds : [];
 			if (list.length === 0) return;
-			const due = list.filter((r) => Number(r.at) <= Date.now());
+			const due = list.filter((r) => Number(r.at) <= Date.now()).slice(0, 5);
 			if (due.length === 0) return;
-			s.reminds = list.filter((r) => Number(r.at) > Date.now());
-			write(s);
-			for (const r of due.slice(0, 5)) {
-				const chatId = r.chatId || (api.config().ownerQQ ? `private:${api.config().ownerQQ}` : '');
-				if (!chatId) continue;
-				Promise.resolve()
-					.then(() => api.send(chatId, `想起来要跟你说：${r.text}`))
-					.catch((e) => log.warn('提醒没发出去：' + e.message));
+			delivering = true;
+			try {
+				for (const r of due) {
+					const chatId = r.chatId || (api.config().ownerQQ ? `private:${api.config().ownerQQ}` : '');
+					if (!chatId) { log.warn('提醒没有发送目标，暂时保留：' + r.text); continue; }
+					try {
+						await api.send(chatId, `想起来要跟你说：${r.text}`);
+						const next = read();
+						const rows = Array.isArray(next.reminds) ? next.reminds : [];
+						const index = rows.findIndex((x) => Number(x.at) === Number(r.at) && Number(x.createdAt) === Number(r.createdAt) && String(x.text) === String(r.text));
+						if (index >= 0) { rows.splice(index, 1); next.reminds = rows; write(next); }
+					} catch (e) {
+						log.warn('提醒没发出去，稍后重试：' + e.message);
+					}
+				}
+			} finally {
+				delivering = false;
 			}
 		}, '约定提醒');
 
