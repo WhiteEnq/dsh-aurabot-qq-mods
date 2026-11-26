@@ -14,7 +14,7 @@ const TICK_MS = 10 * 60_000;
 export default {
 	id: 'bili-reply',
 	name: 'B站回动态评论',
-	version: '1.0.0',
+	version: '1.0.1',
 	api: 1,
 	description: '回她自己 B 站动态下面的评论：读评论、写一句、发出去。默认只读不回。',
 
@@ -239,7 +239,11 @@ export default {
 			};
 		}
 
-		api.every(TICK_MS, () => { run({}).catch(() => {}); }, 'B站回动态');
+		// 定时巡检必须遵守「只读不回」：原来这里写死 run({})，dry 默认 false，会真的发回复。
+		const scheduledRun = () => run({ dry: setting().dryRun === true });
+		api.every(TICK_MS, () => {
+			scheduledRun().catch((error) => log.warn('B站回动态定时检查失败：' + error.message));
+		}, 'B站回动态');
 
 		api.route('/status', async () => statusNow());
 		api.route('/run', async (req) => {
@@ -254,6 +258,6 @@ export default {
 			return { ok: true, message: dry ? '开始检查了，过几秒刷新看结果' : '开始回了，过一会儿刷新看结果' };
 		});
 
-		return { run, status: statusNow };
+		return { run, scheduledRun, status: statusNow };
 	},
 };
