@@ -25,7 +25,7 @@ function cleanText(raw) {
 export default {
 	id: 'bili-dynamic',
 	name: 'B站发动态',
-	version: '1.0.0',
+	version: '1.0.1',
 	api: 1,
 	description: '她自己会发 B 站动态（文案自己写），也能主人让她发一条；每天有上限，可随时关掉。',
 
@@ -135,6 +135,7 @@ export default {
 
 		async function postNow(text) {
 			if (!setting().enabled) throw new Error('B 站动态是关着的');
+			if (left() <= 0) throw new Error('今天的 B 站动态已经发够了');
 			const t = String(text || '').trim() || await askText();
 			if (t === '' || /\[不发\]/.test(t)) throw new Error('她这次没写出来（可以自己填一段再发）');
 			const r = await postDynamic(t);
@@ -218,7 +219,15 @@ export default {
 		function statusNow() {
 			const cur = dayState();
 			const s = readState();
-			return { ok: true, today: cur.count, max: Number(setting().maxPerDay) || 0, left: left(), lastAt: cur.lastAt, history: (s.history || []).slice(0, 10) };
+			return {
+				ok: true,
+				today: cur.count,
+				max: Number(setting().maxPerDay) || 0,
+				left: left(),
+				lastAt: cur.lastAt,
+				awake: { from: Number(setting().awakeFrom ?? 8), to: Number(setting().awakeTo ?? 23) },
+				history: (s.history || []).slice(0, 10),
+			};
 		}
 
 		api.route('/state', async () => statusNow());
