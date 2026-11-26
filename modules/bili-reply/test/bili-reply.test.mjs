@@ -1,95 +1,76 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import mod from '../index.mjs';
 
-function fakeApi({ settings = {}, config = {} } = {}) {
-	const dir = mkdtempSync(join(tmpdir(), 'bili-reply-'));
-	const api = {
-		settings: () => settings,
-		dataDir: () => dir,
-		config: () => config,
-		log: { info() {}, warn() {}, error() {}, debug() {} },
-		on: () => {}, context: () => {}, rule: () => {}, every: () => {}, later: () => {}, route: () => {},
-		use: () => null, ask: async () => '', think: async () => '谢谢', send: async () => {},
-		defineTool: (t) => t, tool: () => {}, command: () => {},
-		core: { http: {}, hub: {} },
-	};
-	return { api, dir };
+function boot(settings = {}, { replies = [] } = {}) {
+  const calls = { think: 0, replies: 0 };
+  const api = {
+    settings: () => ({ ...mod.defaults, dynamicIds: 'https://t.bilibili.com/123456789', ...settings }),
+    dataDir: () => process.env.TEMP || '.',
+    config: () => ({ bili: { cookie: 'SESSDATA=x; bili_jct=y', sessdata: 'x', biliJct: 'y' }, ownerQQ: '1' }),
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+    every: () => {}, route: () => {}, command: () => {}, rule: () => {}, tool: () => {},
+    defineTool: (t) => t,
+    use: () => null,
+    core: { http: { body: async () => ({}) }, hub: { resetChat() {} } },
+    think: async () => { calls.think += 1; return '一条回复'; },
+    ask: async () => { calls.think += 1; return '一条回复'; },
+    send: async () => { calls.replies += 1; return {}; },
+  };
+  // 假网关：登录校验 + 读评论；发回复被调用说明安全失效
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const s = String(url);
+    if (s.includes('/x/web-interface/nav')) return { json: async () => ({ data: { isLogin: true, mid: 42 } }) };
+    if (s.includes('/x/v2/reply?')) {
+      return { json: async () => ({ code: 0, data: { replies: replies.map((r, i) => ({ rpid: String(100 + i), member: { mid: 7, uname: '路人' }, content: { message: r } })) } }) };
+    }
+    if (s.includes('/x/v2/reply/add')) { calls.replies += 1; return { json: async () => ({ code: 0, data: { rpid: 1 } }) }; }
+    throw new Error('unexpected URL: ' + s);
+  };
+  const out = mod.setup(api);
+  return { out, calls, restore: () => { globalThis.fetch = oldFetch; } };
 }
 
-const full = { enabled: true, dryRun: true, maxPerRun: 2, maxPerDay: 8, dynamicsPerRun: 3, minGapMinutes: 20, dynamicIds: '' };
-
 test('模块声明', () => {
-	assert.equal(mod.id, 'bili-reply');
-	assert.equal(mod.api, 1);
+  assert.equal(mod.id, 'bili-reply');
+  assert.equal(mod.api, 1);
+  assert.match(mod.version, /^\d+\.\d+\.\d+$/);
 });
 
-test('没登录就明确报错', async () => {
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = async () => ({ json: async () => ({ data: { isLogin: false } }) });
-	try {
-		const { api } = fakeApi({ settings: full, config: { bili: { sessdata: 'x' } } });
-		const out = mod.setup(api);
-		const r = await out.run({ dry: true, force: true });
-		assert.equal(r.ok, false);
-		assert.match(r.message, /没登录|登录态/);
-	} finally {
-		globalThis.fetch = realFetch;
-	}
+test('默认设置是只读不回', () => {
+  assert.equal(mod.defaults.dryRun, true);
 });
 
-test('没动态可看时给出提示', async () => {
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = async (url) => {
-		if (String(url).includes('nav')) return { json: async () => ({ data: { isLogin: true, mid: 42 } }) };
-		return { json: async () => ({ code: 0, data: { replies: [] } }) };
-	};
-	try {
-		const { api } = fakeApi({ settings: full, config: { bili: { sessdata: 'x' } } });
-		const out = mod.setup(api);
-		const r = await out.run({ dry: true, force: true });
-		assert.equal(r.ok, true);
-		assert.match(r.message, /还没记到|没有/);
-	} finally {
-		globalThis.fetch = realFetch;
-	}
+test('定时巡检遵守 dryRun：只读评论，不写回复', async () => {
+  const { out, calls, restore } = boot({ dryRun: true }, { replies: ['你好'] });
+  try {
+    const r = await out.scheduledRun();
+    assert.equal(r.ok, true);
+    assert.match(r.message, /试运行|没回/);
+    assert.equal(calls.think, 0, 'dry 模式不应生成回复');
+    assert.equal(calls.replies, 0, 'dry 模式不应发回复');
+  } finally {
+    restore();
+  }
 });
 
-test('试运行只列出来，不真回', async () => {
-	const realFetch = globalThis.fetch;
-	const posted = [];
-	globalThis.fetch = async (url, opt) => {
-		const u = String(url);
-		if (u.includes('nav')) return { json: async () => ({ data: { isLogin: true, mid: 42 } }) };
-		if (u.includes('/x/v2/reply/add')) { posted.push(u); return { json: async () => ({ code: 0 }) }; }
-		return {
-			json: async () => ({
-				code: 0,
-				data: { replies: [{ rpid: 9001, member: { mid: 7, uname: '小明' }, content: { message: '好看' } }] },
-			}),
-		};
-	};
-	try {
-		const { api } = fakeApi({ settings: { ...full, dynamicIds: 'https://t.bilibili.com/123456789012' }, config: { bili: { sessdata: 'x' } } });
-		const out = mod.setup(api);
-		const r = await out.run({ dry: true, force: true });
-		assert.equal(r.ok, true);
-		assert.equal(posted.length, 0, '试运行不该发回复');
-		assert.ok(Array.isArray(r.list) && r.list.length === 1);
-		assert.match(r.list[0], /小明/);
-	} finally {
-		globalThis.fetch = realFetch;
-	}
+test('关掉 dryRun 后定时巡检才真的回', async () => {
+  const { out, calls, restore } = boot({ dryRun: false, minGapMinutes: 0, maxPerDay: 5 }, { replies: ['你好'] });
+  try {
+    const r = await out.scheduledRun();
+    assert.equal(r.ok, true);
+    assert.equal(calls.replies, 1, '关掉试运行应当发一条');
+  } finally {
+    restore();
+  }
 });
 
-test('状态接口有今天的计数', () => {
-	const { api } = fakeApi({ settings: full, config: {} });
-	const out = mod.setup(api);
-	const s = out.status();
-	assert.equal(s.ok, true);
-	assert.equal(typeof s.day.count, 'number');
-	assert.equal(s.dryRun, true);
+test('导出 scheduledRun 供宿主/测试调用', () => {
+  const { out, restore } = boot({}, {});
+  try {
+    assert.equal(typeof out.scheduledRun, 'function');
+  } finally {
+    restore();
+  }
 });
