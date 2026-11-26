@@ -96,13 +96,14 @@
     },
     {
       "id": "anti-ai",
-      "name": "去 AI 味",
-      "version": "1.0.0",
-      "description": "清掉「作为 AI」「总而言之」「希望对你有帮助」这类客服腔，并认出模型写的「不说话」记号",
+      "name": "输出安全（草稿/发言隔离）",
+      "version": "1.2.1",
+      "description": "用 draft/say 双区隔离思考草稿与最终发言，并处理沉默、状态回显和客服腔",
       "category": "social",
       "tags": [
+        "输出安全",
+        "草稿隔离",
         "去AI味",
-        "客服腔",
         "沉默"
       ],
       "author": "肥鱼鱼",
@@ -112,13 +113,13 @@
       "requires": [],
       "capabilities": [],
       "replacesBuiltin": false,
-      "tag": "anti-ai-v1.0.0",
-      "file": "anti-ai-v1.0.0.zip",
-      "path": "anti-ai-v1.0.0/anti-ai-v1.0.0.zip",
-      "size": 4036,
-      "sha256": "e6b59f85889aacf6a1c4f679a25bc2b47567dbaa934a825d641c892f174eae45",
-      "commit": "aa1f7400853c3b9e6bb13eb245889176ff03fcbb",
-      "publishedAt": "2026-11-26T02:55:58.730Z"
+      "tag": "anti-ai-v1.2.1",
+      "file": "anti-ai-v1.2.1.zip",
+      "path": "anti-ai-v1.2.1/anti-ai-v1.2.1.zip",
+      "size": 11492,
+      "sha256": "921fd6ef6e4fec6c60c6a98018c1d580ef1bcaf51ff20b7113f5f717cc48f28a",
+      "commit": "d926c16254a4e4c9fe601220e899f7f8accfc20a",
+      "publishedAt": "2026-11-26T03:11:03.433Z"
     },
     {
       "id": "anti-bot",
@@ -4113,5 +4114,5 @@
       "reason": "作者主动撤回。"
     }
   ],
-  "generatedAt": "2026-11-26T02:55:58.730Z"
+  "generatedAt": "2026-11-26T03:11:03.433Z"
 }
